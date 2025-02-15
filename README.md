@@ -15,8 +15,8 @@ A Streamlit-based web application that generates concise summaries from meeting 
 ## Installation 📦
 1. Clone the repository:
    ```bash
-   git clone https://github.com/alejandroarguello/MEETING_SUMMARIZER.git
-   cd MEETING_SUMMARIZER
+   git clone https://github.com/alejandroarguello/meeting_summarizer.git
+   cd meeting_summarizer
 
 2. Install dependencies:
    ```
