@@ -2,16 +2,19 @@
 """
 Meeting Summarizer Web Interface using Streamlit
 
-This application allows users to upload a transcript file (in TXT format) and generates 
-a summarized meeting output using OpenAI's API.
+This application allows users to:
+  - Type a custom meeting name
+  - Upload a transcript file (in TXT format) or an audio file
+  - Generates a summarized meeting output using OpenAI's GPT-4o-mini
 
 Requirements:
   - Python 3.x
   - Packages: streamlit, python-dotenv, openai
-  - A .env file in the project root with the variable OPENAI_API_KEY (should start with "sk-proj-")
+  - A .env file with the variable OPENAI_API_KEY (should start with "sk-proj-")
 """
 
 import os
+import tempfile
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -20,14 +23,11 @@ from openai import OpenAI
 # Configuration and Initialization
 # -----------------------------------------------------------------------------
 
-# Load environment variables from the .env file
 load_dotenv(override=True)
-API_KEY = os.getenv('OPENAI_API_KEY')
+
+API_KEY = os.getenv("OPENAI_API_KEY")
 
 def check_api_key(api_key: str) -> bool:
-    """
-    Validates the API key.
-    """
     if not api_key:
         st.error("Error: No API key found. Please check your .env file.")
         return False
@@ -47,55 +47,118 @@ if not check_api_key(API_KEY):
 # Initialize the OpenAI client
 openai = OpenAI()
 
+AUDIO_MODEL = "whisper-1"
+GPT4O_MODEL = "gpt-4o-mini"
+
 # -----------------------------------------------------------------------------
-# Meeting Summary Generator Function
+# Whisper Transcription (Audio -> Text)
 # -----------------------------------------------------------------------------
 
-def generate_meeting_summary_from_text(transcript: str) -> str:
+def transcribe_audio_file_on_disk(filename: str) -> str:
     """
-    Generates meeting summary from a meeting transcript text.
+    Transcribe the given audio file using OpenAI Whisper,
+    returning the raw text from the transcription.
+    """
+    with open(filename, "rb") as audio_file:
+        transcription = openai.audio.transcriptions.create(
+            model=AUDIO_MODEL,
+            file=audio_file,
+            response_format="text"
+        )
+    return transcription
+
+# -----------------------------------------------------------------------------
+# Summarization with GPT-4o-mini (Text -> Summary)
+# -----------------------------------------------------------------------------
+
+def generate_meeting_summary(transcript: str, meeting_name: str) -> str:
+    """
+    Generates a meeting summary from a plain text transcript using GPT-4o-mini.
     
-    Parameters:
-        transcript (str): The meeting transcript content.
-    
+    Args:
+        transcript (str): The plain text transcript of the meeting.
+        meeting_name (str): The user-provided meeting name.
+        
     Returns:
         str: The generated meeting summary in Markdown format.
     """
+    # Fallback if meeting_name is empty
+    if not meeting_name.strip():
+        meeting_name = "meeting"
+
     system_prompt = (
-        "You are an expert meeting summary generator. You will be provided with a transcript from a Microsoft Teams meeting, "
-        "which includes timestamps and speaker names. Your task is to analyze the transcript, extract the key discussion points, "
-        "decisions made, and action items, and then produce a concise, well-organized summary. Format your output with clear headings "
-        "such as 'Key Points', 'Decisions', and 'Action Items'. Ensure that your summary captures the context and important contributions."
+        "You are an assistant that produces minutes of meetings from transcripts, "
+        "with summary, key discussion points, takeaways, and action items with owners, in markdown."
+    )
+    user_prompt = (
+        f"Below is an extract transcript of the {meeting_name}. "
+        "Please write minutes in markdown, including a summary with attendees, location, and date; "
+        "discussion points; takeaways; and action items with owners.\n"
+        f"{transcript}"
     )
     
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": transcript},
+        {"role": "user", "content": user_prompt},
     ]
     
     response = openai.chat.completions.create(
-        model="gpt-4o-mini",
+        model=GPT4O_MODEL,
         messages=messages
     )
     summary = response.choices[0].message.content
     return summary
 
 # -----------------------------------------------------------------------------
-# Streamlit User Interface
+# Streamlit Interface
 # -----------------------------------------------------------------------------
 
 st.title("Meeting Summarizer")
-st.write("Upload your meeting transcript file (TXT format) to generate summarized meeting information.")
 
-uploaded_file = st.file_uploader("Drag and drop your transcript file here", type=["txt"])
+# Text input for meeting name
+meeting_name = st.text_input(
+    label="Enter the meeting name",
+    value="",  # default empty
+    placeholder="E.g. 'Denver city council meeting' or 'Weekly Marketing Sync'"
+)
 
-if uploaded_file is not None:
-    # Read and decode the transcript file
-    transcript_text = uploaded_file.read().decode("utf-8")
-    st.write("Transcript loaded successfully. Generating meeting summary...")
-    
-    with st.spinner("Generating meeting summary..."):
-        summary_output = generate_meeting_summary_from_text(transcript_text)
-    
-    st.success("Meeting summary generated!")
-    st.markdown(summary_output)
+st.write("Upload your meeting transcript in text form **or** upload an audio file. Both use GPT-4o-mini summarization.")
+
+upload_type = st.radio(
+    "Select your upload type:",
+    ("Text Transcript", "Audio File")
+)
+
+if upload_type == "Text Transcript":
+    uploaded_text_file = st.file_uploader("Upload a TXT transcript", type=["txt"])
+    if uploaded_text_file is not None:
+        transcript_text = uploaded_text_file.read().decode("utf-8")
+        st.write("Transcript loaded successfully.")
+
+        with st.spinner("Generating meeting summary..."):
+            summary_output = generate_meeting_summary(transcript_text, meeting_name)
+
+        st.success("Meeting summary generated!")
+        st.markdown(summary_output)
+
+elif upload_type == "Audio File":
+    uploaded_audio_file = st.file_uploader("Upload an audio file", type=["mp3", "wav", "m4a", "ogg"])
+    if uploaded_audio_file is not None:
+        st.write("Audio file uploaded successfully.")
+        filename, file_ext = os.path.splitext(uploaded_audio_file.name)
+        if not file_ext:
+            file_ext = ".mp3"  # default if none
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+            tmp_file.write(uploaded_audio_file.read())
+            temp_filename = tmp_file.name
+
+        with st.spinner("Transcribing audio with Whisper..."):
+            transcription_text = transcribe_audio_file_on_disk(temp_filename)
+
+        st.write("Transcription complete!")
+        with st.spinner("Generating meeting summary..."):
+            summary_output = generate_meeting_summary(transcription_text, meeting_name)
+
+        st.success("Meeting summary generated!")
+        st.markdown(summary_output)
